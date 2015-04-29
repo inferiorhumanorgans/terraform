@@ -8,7 +8,7 @@ description: |-
 
 # aws\_security\_group
 
-Provides an security group resource.
+Provides a security group resource.
 
 ## Example Usage
 
