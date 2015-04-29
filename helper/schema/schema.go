@@ -17,7 +17,6 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/mapstructure"
@@ -113,6 +112,9 @@ type Schema struct {
 	//
 	// NOTE: This currently does not work.
 	ComputedWhen []string
+
+	// ConflictsWith is a set of schema keys that conflict with this schema
+	ConflictsWith []string
 
 	// When Deprecated is set, this attribute is deprecated.
 	//
@@ -381,6 +383,8 @@ func (m schemaMap) Input(
 			fallthrough
 		case TypeFloat:
 			fallthrough
+		case TypeSet:
+			continue
 		case TypeString:
 			value, err = m.inputString(input, k, v)
 		default:
@@ -434,6 +438,22 @@ func (m schemaMap) InternalValidate() error {
 
 		if len(v.ComputedWhen) > 0 && !v.Computed {
 			return fmt.Errorf("%s: ComputedWhen can only be set with Computed", k)
+		}
+
+		if len(v.ConflictsWith) > 0 && v.Required {
+			return fmt.Errorf("%s: ConflictsWith cannot be set with Required", k)
+		}
+
+		if len(v.ConflictsWith) > 0 {
+			for _, key := range v.ConflictsWith {
+				if m[key].Required {
+					return fmt.Errorf("%s: ConflictsWith cannot contain Required attribute (%s)", k, key)
+				}
+
+				if m[key].Computed || len(m[key].ComputedWhen) > 0 {
+					return fmt.Errorf("%s: ConflictsWith cannot contain Computed(When) attribute (%s)", k, key)
+				}
+			}
 		}
 
 		if v.Type == TypeList || v.Type == TypeSet {
@@ -791,12 +811,18 @@ func (m schemaMap) diffSet(
 	}
 
 	for _, code := range ns.listCode() {
+		// If the code is negative (first character is -) then
+		// replace it with "~" for our computed set stuff.
+		codeStr := strconv.Itoa(code)
+		if codeStr[0] == '-' {
+			codeStr = string('~') + codeStr[1:]
+		}
+
 		switch t := schema.Elem.(type) {
 		case *Resource:
 			// This is a complex resource
 			for k2, schema := range t.Schema {
-				subK := fmt.Sprintf("%s.%d.%s", k, code, k2)
-				subK = strings.Replace(subK, "-", "~", -1)
+				subK := fmt.Sprintf("%s.%s.%s", k, codeStr, k2)
 				err := m.diff(subK, schema, diff, d, true)
 				if err != nil {
 					return err
@@ -810,8 +836,7 @@ func (m schemaMap) diffSet(
 
 			// This is just a primitive element, so go through each and
 			// just diff each.
-			subK := fmt.Sprintf("%s.%d", k, code)
-			subK = strings.Replace(subK, "-", "~", -1)
+			subK := fmt.Sprintf("%s.%s", k, codeStr)
 			err := m.diff(subK, &t2, diff, d, true)
 			if err != nil {
 				return err
@@ -925,7 +950,31 @@ func (m schemaMap) validate(
 			"%q: this field cannot be set", k)}
 	}
 
+	err := m.validateConflictingAttributes(k, schema, c)
+	if err != nil {
+		return nil, []error{err}
+	}
+
 	return m.validateType(k, raw, schema, c)
+}
+
+func (m schemaMap) validateConflictingAttributes(
+	k string,
+	schema *Schema,
+	c *terraform.ResourceConfig) error {
+
+	if len(schema.ConflictsWith) == 0 {
+		return nil
+	}
+
+	for _, conflicting_key := range schema.ConflictsWith {
+		if value, ok := c.Get(conflicting_key); ok {
+			return fmt.Errorf(
+				"%q: conflicts with %s (%#v)", k, conflicting_key, value)
+		}
+	}
+
+	return nil
 }
 
 func (m schemaMap) validateList(
@@ -1033,7 +1082,7 @@ func (m schemaMap) validateObject(
 	}
 
 	// Detect any extra/unknown keys and report those as errors.
-	raw, _ := c.Get(k)
+	raw, _ := c.GetRaw(k)
 	if m, ok := raw.(map[string]interface{}); ok {
 		for subk, _ := range m {
 			if _, ok := schema[subk]; !ok {

@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -51,20 +52,46 @@ func Provider() terraform.ResourceProvider {
 				Description:  descriptions["region"],
 				InputDefault: "us-east-1",
 			},
+
+			"allowed_account_ids": &schema.Schema{
+				Type:          schema.TypeSet,
+				Elem:          &schema.Schema{Type: schema.TypeString},
+				Optional:      true,
+				ConflictsWith: []string{"forbidden_account_ids"},
+				Set: func(v interface{}) int {
+					return hashcode.String(v.(string))
+				},
+			},
+
+			"forbidden_account_ids": &schema.Schema{
+				Type:          schema.TypeSet,
+				Elem:          &schema.Schema{Type: schema.TypeString},
+				Optional:      true,
+				ConflictsWith: []string{"allowed_account_ids"},
+				Set: func(v interface{}) int {
+					return hashcode.String(v.(string))
+				},
+			},
 		},
 
 		ResourcesMap: map[string]*schema.Resource{
 			"aws_autoscaling_group":            resourceAwsAutoscalingGroup(),
+			"aws_app_cookie_stickiness_policy": resourceAwsAppCookieStickinessPolicy(),
 			"aws_db_instance":                  resourceAwsDbInstance(),
 			"aws_db_parameter_group":           resourceAwsDbParameterGroup(),
 			"aws_db_security_group":            resourceAwsDbSecurityGroup(),
 			"aws_db_subnet_group":              resourceAwsDbSubnetGroup(),
+			"aws_ebs_volume":                   resourceAwsEbsVolume(),
+			"aws_elasticache":                  resourceAwsElasticache(),
+			"aws_elasticache_subnet_group":     resourceAwsElasticacheSubnetGroup(),
+			"aws_elasticache_security_group":   resourceAwsElasticacheSecurityGroup(),
 			"aws_eip":                          resourceAwsEip(),
 			"aws_elb":                          resourceAwsElb(),
 			"aws_instance":                     resourceAwsInstance(),
 			"aws_internet_gateway":             resourceAwsInternetGateway(),
 			"aws_key_pair":                     resourceAwsKeyPair(),
 			"aws_launch_configuration":         resourceAwsLaunchConfiguration(),
+			"aws_lb_cookie_stickiness_policy":  resourceAwsLBCookieStickinessPolicy(),
 			"aws_main_route_table_association": resourceAwsMainRouteTableAssociation(),
 			"aws_network_acl":                  resourceAwsNetworkAcl(),
 			"aws_network_interface":            resourceAwsNetworkInterface(),
@@ -109,6 +136,14 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		SecretKey: d.Get("secret_key").(string),
 		Token:     d.Get("token").(string),
 		Region:    d.Get("region").(string),
+	}
+
+	if v, ok := d.GetOk("allowed_account_ids"); ok {
+		config.AllowedAccountIds = v.(*schema.Set).List()
+	}
+
+	if v, ok := d.GetOk("forbidden_account_ids"); ok {
+		config.ForbiddenAccountIds = v.(*schema.Set).List()
 	}
 
 	return config.Client()
