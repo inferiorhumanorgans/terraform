@@ -150,7 +150,7 @@ func resourceAwsSecurityGroupCreate(d *schema.ResourceData, meta interface{}) er
 
 	if v := d.Get("vpc_id"); v != nil {
 		if len(d.Get("egress").(*schema.Set).List()) == 0 {
-			return fmt.Errorf("Error creating Security Group: Security groups inside a VPC require an egress rule. See http://localhost:4567/docs/providers/aws/r/security_group.html for more information.")
+			return fmt.Errorf("Error creating Security Group: Security groups inside a VPC require an egress rule. See http://terraform.io/docs/providers/aws/r/security_group.html for more information.")
 		}
 
 		securityGroupOpts.VPCID = aws.String(v.(string))
@@ -193,6 +193,35 @@ func resourceAwsSecurityGroupCreate(d *schema.ResourceData, meta interface{}) er
 		return fmt.Errorf(
 			"Error waiting for Security Group (%s) to become available: %s",
 			d.Id(), err)
+	}
+
+	// AWS defaults all Security Groups to have an ALLOW ALL egress rule. Here we
+	// revoke that rule, so users don't unknowningly have/use it.
+	if v := d.Get("vpc_id"); v != nil {
+		log.Printf("[DEBUG] Revoking default egress rule for Security Group for %s", d.Id())
+
+		req := &ec2.RevokeSecurityGroupEgressInput{
+			GroupID: createResp.GroupID,
+			IPPermissions: []*ec2.IPPermission{
+				&ec2.IPPermission{
+					FromPort: aws.Long(int64(0)),
+					ToPort:   aws.Long(int64(0)),
+					IPRanges: []*ec2.IPRange{
+						&ec2.IPRange{
+							CIDRIP: aws.String("0.0.0.0/0"),
+						},
+					},
+					IPProtocol: aws.String("-1"),
+				},
+			},
+		}
+
+		if _, err = conn.RevokeSecurityGroupEgress(req); err != nil {
+			return fmt.Errorf(
+				"Error revoking default egress rule for Security Group (%s): %s",
+				d.Id(), err)
+		}
+
 	}
 
 	return resourceAwsSecurityGroupUpdate(d, meta)
@@ -411,23 +440,6 @@ func resourceAwsSecurityGroupUpdateRules(
 		ns := n.(*schema.Set)
 
 		remove := expandIPPerms(group, os.Difference(ns).List())
-
-		if len(remove) == 0 && len(os.List()) == 0 && ruleset == "egress" {
-			// For new Security groups, a default Egress rule is created. Here we add
-			// the equivelent IPPermission struct for removal, so that only the
-			// supplied egress rules exist in the security group.
-			remove = append(remove, &ec2.IPPermission{
-				FromPort: aws.Long(int64(0)),
-				ToPort:   aws.Long(int64(0)),
-				IPRanges: []*ec2.IPRange{
-					&ec2.IPRange{
-						CIDRIP: aws.String("0.0.0.0/0"),
-					},
-				},
-				IPProtocol: aws.String("-1"),
-			})
-		}
-
 		add := expandIPPerms(group, ns.Difference(os).List())
 
 		// TODO: We need to handle partial state better in the in-between
