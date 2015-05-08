@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	"encoding/gob"
+	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/terraform/config/lang"
@@ -240,7 +242,16 @@ func (r *RawConfig) merge(r2 *RawConfig) *RawConfig {
 
 	raw := rawRaw.(map[string]interface{})
 	for k, v := range r2.Raw {
-		raw[k] = v
+		typeName := reflect.TypeOf(raw[k]).String()
+
+		// Array combine
+		if strings.HasPrefix(typeName, "[]map[string]") == true {
+			newMap := v.([]map[string]interface{})
+			oldMap := raw[k].([]map[string]interface{})
+			raw[k] = append(newMap, oldMap...)
+		} else {
+			raw[k] = v
+		}
 	}
 
 	result, err := NewRawConfig(raw)
